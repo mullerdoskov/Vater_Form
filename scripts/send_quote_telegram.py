@@ -2,21 +2,21 @@
 send_quote_telegram.py
 ======================
 
-Recebe um JSON com os dados de cotacao via STDIN, monta uma mensagem
-formato tabela (HTML/<pre>) e envia para o chat 'Livecare' via
-operador_Telegram do ecossistema Middle.
+[STATUS: opcional - apenas para teste standalone via terminal]
 
-Uso (testavel via terminal):
-    type dados.json | python send_quote_telegram.py
-    echo {"nome":"...", "telefone":"..."} | python send_quote_telegram.py
+A rota /api/send-quote do Next.js NAO depende mais deste script.
+Ela faz a chamada para a Telegram Bot API direto em TypeScript,
+para ser compativel com o runtime serverless do Vercel (que nao
+roda Python).
 
-Saida em STDOUT (JSON):
-    {"success": true, "chat": "Livecare"}
-ou em STDERR (JSON) com exit code 1:
-    {"success": false, "error": "...", "traceback": "..."}
+Este script continua aqui como utilitario para testar o envio
+do mesmo payload via terminal/Python, reutilizando o operador
+operador_Telegram da pasta local Telegram/.
 
-Esta versao chama o operador_Telegram diretamente para reaproveitar a
-logica de cache/rate-limit do bot Energy_bot.
+Uso (testavel via terminal, a partir da raiz de page_cotacao):
+    type dados.json | python scripts\\send_quote_telegram.py
+
+Saida (stdout JSON em caso de sucesso, stderr JSON em caso de erro).
 """
 from __future__ import annotations
 
@@ -25,15 +25,21 @@ import os
 import sys
 import traceback
 from datetime import datetime
+from pathlib import Path
 
-# ─── Bootstrap do ecossistema Middle ──────────────────────────────────────
-# operadores_gerais vive em C:\Users\lucas\Documents\Middle\0.SCRIPTS\0.CLASSES.
-# Adiciona ao sys.path se nao estiver.
-PATH_CLASSES = r"C:\Users\lucas\Documents\Middle\0.SCRIPTS\0.CLASSES"
-if PATH_CLASSES not in sys.path:
-    sys.path.insert(0, PATH_CLASSES)
+# ─── Paths locais ──────────────────────────────────────────────────────────
+# O script vive em page_cotacao/scripts/. A pasta Telegram esta em
+# page_cotacao/Telegram/.
+THIS_FILE = Path(__file__).resolve()
+PROJECT_ROOT = THIS_FILE.parent.parent
+TELEGRAM_DIR = PROJECT_ROOT / "Telegram"
+ENERGY_BOT_DIR = TELEGRAM_DIR / "Energy_bot"
 
-# Forca UTF-8 no stdin/stdout/stderr (Windows costuma vir em cp1252)
+# Adiciona Telegram/ ao sys.path para encontrar operadores_gerais.py
+if str(TELEGRAM_DIR) not in sys.path:
+    sys.path.insert(0, str(TELEGRAM_DIR))
+
+# UTF-8 nos streams (Windows costuma vir em cp1252)
 for stream_name in ("stdin", "stdout", "stderr"):
     stream = getattr(sys, stream_name, None)
     if stream is not None and hasattr(stream, "reconfigure"):
@@ -45,8 +51,7 @@ for stream_name in ("stdin", "stdout", "stderr"):
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
 def _escape_html(s) -> str:
-    """Escapa caracteres que quebrariam o parser HTML do Telegram."""
-    if s is None:
+    if s is None or s == "":
         return "-"
     return (
         str(s)
@@ -57,7 +62,6 @@ def _escape_html(s) -> str:
 
 
 def _fmt_data_iso(s) -> str:
-    """Converte ISO datetime -> '2026-05-10 14:30' (br-friendly)."""
     if not s:
         return "-"
     try:
@@ -68,15 +72,6 @@ def _fmt_data_iso(s) -> str:
 
 
 def montar_mensagem_tabela(data: dict) -> str:
-    """Monta mensagem HTML com cabecalho em <b> e tabela 2 colunas em <pre>.
-
-    Estrutura:
-      <b>🩺 Nova Cotacao - <Nome></b>
-      <pre>
-      Campo          : Valor
-      ...
-      </pre>
-    """
     rows = [
         ("Nome",          data.get("nome")),
         ("Telefone",      data.get("telefone")),
@@ -92,23 +87,34 @@ def montar_mensagem_tabela(data: dict) -> str:
         ("Hospital pref", data.get("hospitalPreferido")),
         ("Enviado em",    _fmt_data_iso(data.get("dataEnvio"))),
     ]
-
-    # Largura do label = label mais longo + 1 espaco
     label_w = max(len(k) for k, _ in rows)
-
     linhas = []
     for k, v in rows:
         val = "-" if v in (None, "", "null") else v
         linhas.append(f"{k.ljust(label_w)} : {_escape_html(val)}")
-
     body_pre = "\n".join(linhas)
     nome_safe = _escape_html(data.get("nome") or "(sem nome)")
+    return f"<b>🩺 Nova Cotacao - {nome_safe}</b>\n<pre>{body_pre}</pre>"
 
-    msg = (
-        f"<b>🩺 Nova Cotacao - {nome_safe}</b>\n"
-        f"<pre>{body_pre}</pre>"
-    )
-    return msg
+
+def _patch_operador_paths(opg_module):
+    """Forca o operador_Telegram a usar a pasta local Telegram/Energy_bot/.
+
+    O operador original calcula path_middle como '../..' do __file__, o
+    que aponta para uma estrutura diferente (Documents/Middle). Aqui
+    reescrevemos o path_folder_bot no __init__ para apontar para a
+    pasta local que veio no commit.
+    """
+    OperadorTelegramOriginal = opg_module.operador_Telegram
+    init_orig = OperadorTelegramOriginal.__init__
+
+    def init_patched(self, *args, **kwargs):
+        init_orig(self, *args, **kwargs)
+        self.path_folder_bot = str(ENERGY_BOT_DIR)
+        self.path_credenciais = str(ENERGY_BOT_DIR / "credenciais.csv")
+        self.path_chat = str(ENERGY_BOT_DIR / "chat_id.csv")
+
+    OperadorTelegramOriginal.__init__ = init_patched
 
 
 # ─── Main ────────────────────────────────────────────────────────────────
@@ -117,32 +123,31 @@ def main() -> int:
         raw = sys.stdin.read()
         if not raw.strip():
             raise ValueError("stdin vazio - nenhum JSON recebido")
-
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
             raise ValueError(f"JSON invalido em stdin: {e}") from e
-
         if not isinstance(data, dict):
-            raise ValueError(f"Esperado objeto JSON, recebi {type(data).__name__}")
+            raise ValueError(
+                f"Esperado objeto JSON, recebi {type(data).__name__}",
+            )
 
-        # Importa apos garantir o path - caso operadores_gerais ou suas deps
-        # nao estejam disponiveis, da erro com mensagem clara.
         try:
             import operadores_gerais as opg  # noqa: WPS433
         except Exception as e:
             raise RuntimeError(
-                f"Falha ao importar operadores_gerais de {PATH_CLASSES!r}: "
+                f"Falha ao importar operadores_gerais de {TELEGRAM_DIR!s}: "
                 f"{type(e).__name__}: {e}"
             ) from e
 
+        # Aponta o operador para a pasta local de credenciais
+        _patch_operador_paths(opg)
+
         msg = montar_mensagem_tabela(data)
 
-        # Envia
         tl = opg.operador_Telegram()
         tl.enviar_msg("Livecare", msg, html=True)
 
-        # Resposta de sucesso (Next.js le do stdout)
         sys.stdout.write(json.dumps({
             "success": True,
             "chat": "Livecare",
@@ -152,12 +157,11 @@ def main() -> int:
         return 0
 
     except Exception as e:
-        err_payload = {
+        sys.stderr.write(json.dumps({
             "success": False,
             "error": f"{type(e).__name__}: {e}",
             "traceback": traceback.format_exc(),
-        }
-        sys.stderr.write(json.dumps(err_payload, ensure_ascii=False))
+        }, ensure_ascii=False))
         sys.stderr.flush()
         return 1
 
