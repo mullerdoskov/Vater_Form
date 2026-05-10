@@ -15,17 +15,18 @@ type OptionButtonProps = {
 }
 
 function OptionButton({ label, selected, onClick, variant = "default" }: OptionButtonProps) {
-  const baseClasses = "w-full flex items-center gap-3 p-3 rounded-xl border-2 transition-all duration-200 text-left font-medium text-sm"
-  
+  // Mobile-first: caixas e textos compactos por padrao; crescem em telas maiores.
+  const baseClasses = "w-full flex items-center gap-1.5 sm:gap-3 px-2 py-2 sm:p-3 rounded-xl border-2 transition-all duration-200 text-left font-medium text-[11px] sm:text-sm min-w-0"
+
   const variants = {
-    default: selected 
-      ? "border-primary bg-primary/10 text-primary" 
+    default: selected
+      ? "border-primary bg-primary/10 text-primary"
       : "border-border bg-card hover:border-primary/50 text-foreground",
-    success: selected 
-      ? "border-primary bg-primary/10 text-primary" 
+    success: selected
+      ? "border-primary bg-primary/10 text-primary"
       : "border-border bg-card hover:border-primary/50 text-foreground",
-    danger: selected 
-      ? "border-destructive bg-destructive/10 text-destructive" 
+    danger: selected
+      ? "border-destructive bg-destructive/10 text-destructive"
       : "border-border bg-card hover:border-destructive/50 text-foreground"
   }
 
@@ -34,14 +35,14 @@ function OptionButton({ label, selected, onClick, variant = "default" }: OptionB
       onClick={onClick}
       className={`${baseClasses} ${variants[variant]}`}
     >
-      <span className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold shrink-0 ${
-        selected 
+      <span className={`w-5 h-5 sm:w-7 sm:h-7 rounded-lg flex items-center justify-center text-[10px] sm:text-xs font-bold shrink-0 ${
+        selected
           ? variant === "danger" ? "bg-destructive text-white" : "bg-primary text-white"
           : "bg-muted text-muted-foreground"
       }`}>
-        {selected ? <Check className="w-3 h-3" /> : label.charAt(0)}
+        {selected ? <Check className="w-2.5 h-2.5 sm:w-3 sm:h-3" /> : label.charAt(0)}
       </span>
-      {label}
+      <span className="truncate">{label}</span>
     </button>
   )
 }

@@ -152,8 +152,10 @@ async function enviarTelegram(
   token: string,
   chatId: number,
   mensagem: string,
-): Promise<void> {
+): Promise<{ status: number; body: string; ok: boolean; description?: string }> {
   const url = `https://api.telegram.org/bot${token}/sendMessage`
+  console.log(`[send-quote] POST sendMessage chat_id=${chatId} len=${mensagem.length}`)
+
   const resp = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -165,18 +167,35 @@ async function enviarTelegram(
     }),
   })
 
+  const bodyText = await resp.text().catch(() => "")
+  console.log(
+    `[send-quote] Telegram respondeu status=${resp.status} body=${bodyText.substring(0, 500)}`,
+  )
+
   if (!resp.ok) {
-    const body = await resp.text().catch(() => "")
     throw new Error(
-      `Telegram API retornou ${resp.status} ${resp.statusText}: ${body}`,
+      `Telegram API retornou ${resp.status} ${resp.statusText}: ${bodyText}`,
     )
   }
 
-  const j = (await resp.json().catch(() => ({}))) as { ok?: boolean; description?: string }
-  if (j.ok !== true) {
+  let parsed: { ok?: boolean; description?: string } = {}
+  try {
+    parsed = JSON.parse(bodyText)
+  } catch {
+    /* ignora - parsed fica vazio */
+  }
+
+  if (parsed.ok !== true) {
     throw new Error(
-      `Telegram API respondeu ok=false: ${j.description || JSON.stringify(j)}`,
+      `Telegram API respondeu ok=false: ${parsed.description || bodyText}`,
     )
+  }
+
+  return {
+    status: resp.status,
+    body: bodyText,
+    ok: true,
+    description: parsed.description,
   }
 }
 
@@ -212,25 +231,40 @@ export async function POST(request: Request) {
 
     const mensagem = montarMensagemTabela(data)
 
+    let tgResp
     try {
-      await enviarTelegram(token, chatId, mensagem)
+      tgResp = await enviarTelegram(token, chatId, mensagem)
     } catch (err) {
       console.error("[send-quote] falha no envio Telegram:", err)
       return NextResponse.json(
         {
           success: false,
           message: "Erro ao enviar para o Telegram",
+          chat_id_usado: chatId,
           detail: err instanceof Error ? err.message : String(err),
         },
         { status: 502 },
       )
     }
 
-    console.log("[send-quote] Telegram OK (chat Livecare)")
+    // Extrai message_id se possivel pra confirmar entrega
+    let messageId: number | undefined
+    try {
+      const parsed = JSON.parse(tgResp.body)
+      messageId = parsed?.result?.message_id
+    } catch {
+      /* ignora */
+    }
+
+    console.log(
+      `[send-quote] Telegram OK chat_id=${chatId} message_id=${messageId}`,
+    )
 
     return NextResponse.json({
       success: true,
       message: "Cotacao enviada com sucesso",
+      chat_id_usado: chatId,
+      message_id: messageId,
     })
   } catch (error) {
     console.error("[send-quote] erro inesperado:", error)
