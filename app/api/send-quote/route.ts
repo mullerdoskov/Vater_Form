@@ -199,6 +199,135 @@ async function enviarTelegram(
   }
 }
 
+// ==========================================================================
+// Kommo (CRM) - cria o lead automaticamente com os MESMOS dados do Telegram
+// ==========================================================================
+//
+// Configuracao por variaveis de ambiente (a Kommo usa TOKEN, nao login/senha):
+//   KOMMO_SUBDOMAIN     - subdominio da conta (ex.: "livecare" de livecare.kommo.com)
+//   KOMMO_ACCESS_TOKEN  - token de longa duracao (aba "Keys and scopes" da
+//                         integracao privada). So admin gera; e secreto.
+//   KOMMO_PIPELINE_ID   - (opcional) id do funil onde o lead deve cair
+//   KOMMO_STATUS_ID     - (opcional) id da etapa do funil
+//
+// Se KOMMO_SUBDOMAIN ou KOMMO_ACCESS_TOKEN nao estiverem definidos, a etapa
+// Kommo e ignorada e o envio ao Telegram continua funcionando normalmente.
+
+function montarNotaKommo(data: QuoteData): string {
+  const linhas: string[] = [
+    `Nome: ${data.nome || "-"}`,
+    `Telefone: ${data.telefone || "-"}`,
+    `Pessoas: ${data.quantidadePessoas || "-"}`,
+    `Idades: ${data.idades || "-"}`,
+    `Tem plano: ${data.temPlanoSaude || "-"}`,
+    `Plano atual: ${data.planoAtual || "-"}`,
+    `Reside SP: ${data.resideSaoPaulo || "-"}`,
+    `Cidade: ${data.cidade || "-"}`,
+    `Acomodacao: ${data.acomodacao || "-"}`,
+    `Tem CNPJ: ${data.temCNPJ || "-"}`,
+    `Hospital pref.: ${data.hospitalPreferido || "-"}`,
+    `Enviado em: ${fmtDataIso(data.dataEnvio)}`,
+  ]
+  return `Cotacao recebida pelo site:\n${linhas.join("\n")}`
+}
+
+async function criarLeadKommo(
+  data: QuoteData,
+): Promise<{ ok: boolean; skipped?: boolean; leadId?: number; detail?: string }> {
+  const subdominio = process.env.KOMMO_SUBDOMAIN?.trim()
+  const tokenKommo = process.env.KOMMO_ACCESS_TOKEN?.trim()
+
+  if (!subdominio || !tokenKommo) {
+    console.log(
+      "[send-quote] Kommo nao configurado (KOMMO_SUBDOMAIN/KOMMO_ACCESS_TOKEN) - pulando.",
+    )
+    return { ok: false, skipped: true }
+  }
+
+  const base = `https://${subdominio}.kommo.com`
+  const headers = {
+    Authorization: `Bearer ${tokenKommo}`,
+    "Content-Type": "application/json",
+  }
+
+  // Tags: "Site" + cada plano que o lead marcou
+  const tags: { name: string }[] = [{ name: "Site" }]
+  if (data.planoAtual) {
+    for (const p of data.planoAtual.split(",").map((s) => s.trim()).filter(Boolean)) {
+      tags.push({ name: p })
+    }
+  }
+
+  const lead: Record<string, unknown> = {
+    name: `Cotacao - ${data.nome || "Sem nome"}`,
+    _embedded: {
+      contacts: [
+        {
+          name: data.nome || "Sem nome",
+          custom_fields_values: [
+            {
+              field_code: "PHONE",
+              values: [{ value: data.telefone || "", enum_code: "WORK" }],
+            },
+          ],
+        },
+      ],
+      tags,
+    },
+  }
+
+  // Funil/etapa opcionais
+  const pipelineId = Number(process.env.KOMMO_PIPELINE_ID)
+  const statusId = Number(process.env.KOMMO_STATUS_ID)
+  if (Number.isFinite(pipelineId) && pipelineId > 0) lead.pipeline_id = pipelineId
+  if (Number.isFinite(statusId) && statusId > 0) lead.status_id = statusId
+
+  // 1) Cria lead + contato (com controle de duplicados da Kommo)
+  const resp = await fetch(`${base}/api/v4/leads/complex`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify([lead]),
+  })
+  const body = await resp.text().catch(() => "")
+  if (!resp.ok) {
+    throw new Error(`Kommo /leads/complex ${resp.status}: ${body.substring(0, 500)}`)
+  }
+
+  // Extrai o id do lead criado
+  let leadId: number | undefined
+  try {
+    const parsed = JSON.parse(body)
+    leadId = Array.isArray(parsed)
+      ? parsed[0]?.id
+      : parsed?._embedded?.leads?.[0]?.id
+  } catch {
+    /* ignora */
+  }
+
+  // 2) Anexa uma nota com os mesmos detalhes do Telegram
+  if (leadId) {
+    try {
+      const notaResp = await fetch(`${base}/api/v4/leads/${leadId}/notes`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify([
+          { note_type: "common", params: { text: montarNotaKommo(data) } },
+        ]),
+      })
+      if (!notaResp.ok) {
+        console.error(
+          `[send-quote] Kommo nota falhou ${notaResp.status}: ${(await notaResp.text().catch(() => "")).substring(0, 300)}`,
+        )
+      }
+    } catch (err) {
+      console.error("[send-quote] Kommo nota erro:", err)
+    }
+  }
+
+  console.log(`[send-quote] Kommo OK lead_id=${leadId}`)
+  return { ok: true, leadId }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Handler
 // ──────────────────────────────────────────────────────────────────────────
@@ -260,11 +389,24 @@ export async function POST(request: Request) {
       `[send-quote] Telegram OK chat_id=${chatId} message_id=${messageId}`,
     )
 
+    // Cria o lead na Kommo com os mesmos dados (best-effort: nao quebra o envio)
+    let kommoResultado: { ok: boolean; skipped?: boolean; leadId?: number; detail?: string }
+    try {
+      kommoResultado = await criarLeadKommo(data)
+    } catch (err) {
+      console.error("[send-quote] falha ao criar lead na Kommo:", err)
+      kommoResultado = {
+        ok: false,
+        detail: err instanceof Error ? err.message : String(err),
+      }
+    }
+
     return NextResponse.json({
       success: true,
       message: "Cotacao enviada com sucesso",
       chat_id_usado: chatId,
       message_id: messageId,
+      kommo: kommoResultado,
     })
   } catch (error) {
     console.error("[send-quote] erro inesperado:", error)
