@@ -332,12 +332,11 @@ export default function CotacaoPage() {
           <div className="flex flex-col justify-center lg:col-span-7 space-y-6 sm:space-y-8">
             <div className="space-y-4">
               <h1 className="text-3xl font-extrabold tracking-tight text-foreground sm:text-4xl lg:text-5xl text-balance">
-                Reduza o custo do plano de saúde da sua empresa em até{" "}
+                Reduza o custo do Plano de Saúde em até{" "}
                 <span className="text-primary">40%</span>
               </h1>
               <p className="text-base sm:text-lg text-muted-foreground max-w-xl text-pretty">
-                Analisamos sua apólice atual e cotamos as principais operadoras do mercado
-                para encontrar o equilíbrio perfeito entre custo e benefício.
+                Cotamos as principais operadoras do mercado.
               </p>
             </div>
 
@@ -350,7 +349,7 @@ export default function CotacaoPage() {
                 <div>
                   <h3 className="font-semibold text-foreground">Desconto pelo CNPJ / MEI</h3>
                   <p className="text-sm text-muted-foreground">
-                    Planos corporativos a partir de 2 vidas com valores bem menores que o individual.
+                    Planos a partir de 1 vida com valores bem menores que o individual.
                   </p>
                 </div>
               </div>
