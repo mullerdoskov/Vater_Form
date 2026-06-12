@@ -1,48 +1,39 @@
-import nodemailer from 'nodemailer'
+import { Resend } from 'resend'
 
 /**
- * Email service using Outlook/Hotmail SMTP
- * Sender: atlas.energy@hotmail.com
+ * Email service using Resend.
+ * Requires RESEND_API_KEY env var.
  *
- * Requires EMAIL_PASSWORD env var (the Hotmail account password
- * or an app password if 2FA is enabled on the account).
+ * Sender uses Resend's shared onboarding domain by default so it works
+ * immediately without verifying a custom domain. To use your own domain,
+ * verify it in resend.com and update SENDER_EMAIL.
  */
 
-const SENDER_EMAIL = 'atlas.energy@hotmail.com'
-const SENDER_NAME = 'TradingBook'
+const SENDER_EMAIL = 'TradingBook <onboarding@resend.dev>'
 
-function getTransporter() {
-  if (!process.env.EMAIL_PASSWORD) {
+function getResend() {
+  if (!process.env.RESEND_API_KEY) {
     return null
   }
-
-  return nodemailer.createTransport({
-    host: 'smtp-mail.outlook.com',
-    port: 587,
-    secure: false, // STARTTLS
-    auth: {
-      user: SENDER_EMAIL,
-      pass: process.env.EMAIL_PASSWORD,
-    },
-  })
+  return new Resend(process.env.RESEND_API_KEY)
 }
 
 export async function sendPasswordResetEmail(
   to: string,
   resetUrl: string
 ): Promise<{ sent: boolean; error?: string }> {
-  const transporter = getTransporter()
+  const resend = getResend()
 
-  if (!transporter) {
+  if (!resend) {
     return {
       sent: false,
-      error: 'EMAIL_PASSWORD não configurado',
+      error: 'RESEND_API_KEY não configurado',
     }
   }
 
   try {
-    await transporter.sendMail({
-      from: `"${SENDER_NAME}" <${SENDER_EMAIL}>`,
+    const { error } = await resend.emails.send({
+      from: SENDER_EMAIL,
       to,
       subject: 'Recuperação de senha - TradingBook',
       text: `Você solicitou a recuperação de senha da sua conta TradingBook.\n\nAcesse o link abaixo para redefinir sua senha (válido por 1 hora):\n${resetUrl}\n\nSe você não solicitou esta recuperação, ignore este email.`,
@@ -71,6 +62,11 @@ export async function sendPasswordResetEmail(
         </div>
       `,
     })
+
+    if (error) {
+      console.log('[v0] Resend send error:', error.message)
+      return { sent: false, error: error.message }
+    }
 
     return { sent: true }
   } catch (err) {
