@@ -1,13 +1,11 @@
 import { redirect } from 'next/navigation'
 import { auth } from '@/lib/auth'
 import { headers } from 'next/headers'
+import { AuthForm } from '@/components/auth-form'
 
-export default async function HomePage() {
+export default async function SignUpPage() {
   const session = await auth.api.getSession({ headers: await headers() })
+  if (session?.user) redirect('/dashboard')
   
-  if (session?.user) {
-    redirect('/dashboard')
-  } else {
-    redirect('/sign-in')
-  }
+  return <AuthForm mode="sign-up" />
 }
